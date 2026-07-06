@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Excel ke Google Sheets - Rekap Realisasi</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://accounts.google.com/gsi/client" async></script>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f4f1ea;
+    color: #1c1b18;
+    max-width: 680px;
+    margin: 40px auto;
+    padding: 0 20px;
+  }
+  h1 { font-size: 22px; font-weight: 600; margin-bottom: 4px; }
+  p.sub { color: #6b6a63; font-size: 14px; margin-top: 0; margin-bottom: 32px; }
+  .card {
+    background: #ffffff;
+    border: 1px solid #e3e0d6;
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin-bottom: 20px;
+  }
+  .card p.label { font-size: 13px; color: #6b6a63; margin: 0 0 8px; font-weight: 600; }
+  .hint { font-size: 12px; color: #9a988f; margin: 8px 0 0; }
+  input[type="text"], input[type="file"], input[type="number"] {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #d8d5c9;
+    border-radius: 6px;
+    font-size: 14px;
+    background: #fff;
+    margin-bottom: 12px;
+  }
+  .field-row { display: flex; gap: 12px; }
+  .field-row > div { flex: 1; }
+  .field-row label, .card label.sub-label {
+    display: block;
+    font-size: 12px;
+    color: #6b6a63;
+    margin-bottom: 4px;
+  }
+  label.radio {
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+  button {
+    background: #d97757;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 10px 16px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  button:disabled { background: #d8d5c9; cursor: not-allowed; }
+  button.secondary {
+    background: #fff;
+    color: #1c1b18;
+    border: 1px solid #d8d5c9;
+  }
+  #authStatus { font-size: 13px; color: #6b6a63; margin-left: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+  td { border: 1px solid #e3e0d6; padding: 4px 8px; }
+  #log { font-size: 13px; color: #6b6a63; white-space: pre-line; margin-top: 16px; }
+  #log a { color: #b45532; }
+  .row { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
+</style>
+</head>
+<body>
+
+<h1>Excel ke Google Sheets — Rekap Albert Punya ya</h1>
+<p class="sub">Unggah file Excel mentah AWAWA keren sekali</p>
+
+<div class="row">
+  <button id="connectBtn" class="secondary">Hubungkan akun Google</button>
+  <span id="authStatus">Belum terhubung</span>
+</div>
+
+<div class="card">
+  <p class="label">1. Pilih file Excel</p>
+  <input type="file" id="fileInput" accept=".xlsx,.xls" />
+  <div id="previewWrap" style="display:none; margin-top:12px; overflow-x:auto;">
+    <p class="hint" id="previewInfo"></p>
+    <table id="previewTable"></table>
+  </div>
+</div>
+
+<div class="card">
+  <p class="label">2. Info Rekap (berlaku untuk semua baris)</p>
+  <label class="sub-label">Judul rekap</label>
+  <input type="text" id="judulRekap" placeholder="Contoh: REALISASI SEMESTER II TAHUN 2025" />
+  <div class="field-row">
+    <div>
+      <label class="sub-label">Batas Pelaporan</label>
+      <input type="text" id="batasPelaporan" placeholder="Contoh: 02/02/2026" />
+    </div>
+    <div>
+      <label class="sub-label">Maks Hari Keterlambatan</label>
+      <input type="number" id="maksHari" placeholder="Contoh: 30" />
+    </div>
+  </div>
+  <p class="hint">Nilai ini akan sama untuk semua baris data.</p>
+</div>
+
+<div class="card">
+  <p class="label">3. Tujuan</p>
+  <label class="radio"><input type="radio" name="mode" value="new" checked /> Buat spreadsheet baru</label>
+  <input type="text" id="newTitle" placeholder="Nama spreadsheet baru" style="margin-bottom:12px;" />
+  <label class="radio"><input type="radio" name="mode" value="existing" /> Pakai spreadsheet yang sudah ada</label>
+  <input type="text" id="existingId" placeholder="ID spreadsheet (dari URL-nya)" disabled style="margin-bottom:12px;" />
+  <input type="text" id="tabName" placeholder="Nama tab/sheet (contoh: Data Gabung)" value="Data Gabung" />
+</div>
+
+<div class="row">
+  <button id="uploadBtn" disabled>Unggah ke Google Sheets</button>
+</div>
+
+<div id="log"></div>
+
+<script>
+// ====== ISI CLIENT ID KAMU DI SINI ======
+const CLIENT_ID = "842732679493-hqtjeiscaf2g2b397mc07hbkp3jom6lh.apps.googleusercontent.com";
+// =========================================
+
+// Nama kolom persis seperti di file Excel mentah
+const COL_PUJK = 'Nama PUJK';
+const COL_SEKTOR = 'Sub Sub Sektor';
+const COL_PENGAWAS = 'Satker';
+const COL_NOMOR_LAPORAN = 'No. Laporan';
+const COL_TANGGAL_KIRIM = 'Tanggal Kirim';
+const COL_HARI_TERLAMBAT = 'Keterlambatan (Hr)';
+
+let accessToken = null;
+let sourceRows = null; // array of objects dari excel (keyed by header)
+let tokenClient = null;
+
+const logEl = document.getElementById('log');
+function log(msg, isError) {
+  const line = document.createElement('div');
+  line.textContent = msg;
+  if (isError) line.style.color = '#b3261e';
+  logEl.appendChild(line);
+}
+
+document.querySelectorAll('input[name="mode"]').forEach(function (r) {
+  r.addEventListener('change', function () {
+    const isNew = document.querySelector('input[name="mode"]:checked').value === 'new';
+    document.getElementById('newTitle').disabled = !isNew;
+    document.getElementById('existingId').disabled = isNew;
+  });
+});
+
+function formatTanggal(val) {
+  if (!val) return '';
+  let d;
+  if (val instanceof Date) {
+    d = val;
+  } else {
+    d = new Date(val);
+  }
+  if (isNaN(d.getTime())) return '';
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const yyyy = d.getFullYear();
+  return dd + '/' + mm + '/' + yyyy;
+}
+
+document.getElementById('fileInput').addEventListener('change', function (e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function (evt) {
+    const data = new Uint8Array(evt.target.result);
+    const wb = XLSX.read(data, { type: 'array', cellDates: true });
+    const sheetName = wb.SheetNames[0];
+    const ws = wb.Sheets[sheetName];
+    sourceRows = XLSX.utils.sheet_to_json(ws, { defval: '', raw: true });
+
+    const info = document.getElementById('previewInfo');
+    info.textContent = 'Sheet "' + sheetName + '" — ' + sourceRows.length + ' baris data terbaca. Pratinjau 5 baris pertama (kolom yang dipakai saja):';
+
+    const table = document.getElementById('previewTable');
+    table.innerHTML = '';
+    const headerRow = document.createElement('tr');
+    ['PUJK', 'SEKTOR', 'PENGAWAS', 'NOMOR LAPORAN', 'TANGGAL LAPOR', 'HARI KETERLAMBATAN'].forEach(function (h) {
+      const td = document.createElement('td');
+      td.textContent = h;
+      td.style.fontWeight = '600';
+      headerRow.appendChild(td);
+    });
+    table.appendChild(headerRow);
+
+    sourceRows.slice(0, 5).forEach(function (row) {
+      const tr = document.createElement('tr');
+      [
+        row[COL_PUJK] || '',
+        row[COL_SEKTOR] || '',
+        row[COL_PENGAWAS] || '',
+        row[COL_NOMOR_LAPORAN] || '',
+        formatTanggal(row[COL_TANGGAL_KIRIM]),
+        row[COL_HARI_TERLAMBAT] !== undefined ? row[COL_HARI_TERLAMBAT] : ''
+      ].forEach(function (cell) {
+        const td = document.createElement('td');
+        td.textContent = cell;
+        tr.appendChild(td);
+      });
+      table.appendChild(tr);
+    });
+    document.getElementById('previewWrap').style.display = 'block';
+    log('File terbaca: ' + file.name + ' (' + sourceRows.length + ' baris)');
+    checkReady();
+  };
+  reader.readAsArrayBuffer(file);
+});
+
+document.getElementById('connectBtn').addEventListener('click', function () {
+  if (CLIENT_ID.indexOf('GANTI_DENGAN') === 0) { log('Isi dulu CLIENT_ID di dalam kode index.html.', true); return; }
+  if (typeof google === 'undefined') { log('Google Identity Services belum siap, coba lagi sebentar.', true); return; }
+
+  tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: CLIENT_ID,
+    scope: 'https://www.googleapis.com/auth/spreadsheets',
+    callback: function (resp) {
+      if (resp.error) {
+        log('Gagal login: ' + resp.error, true);
+        return;
+      }
+      accessToken = resp.access_token;
+      document.getElementById('authStatus').textContent = 'Terhubung ✓';
+      log('Berhasil terhubung ke akun Google.');
+      checkReady();
+    },
+  });
+  tokenClient.requestAccessToken();
+});
+
+function checkReady() {
+  document.getElementById('uploadBtn').disabled = !(accessToken && sourceRows);
+}
+
+// Susun array 2D final: 3 baris header + data, sesuai layout target
+function buildValues(judul, batasPelaporan, maksHari) {
+  const values = [];
+
+  // Baris 1: judul (di E1, akan di-merge E1:J1)
+  values.push(['', '', '', '', judul, '', '', '', '', '']);
+
+  // Baris 2: header group
+  values.push(['No', 'PUJK', 'SEKTOR', 'PENGAWAS', 'BATAS PELAPORAN', 'MAKS HARI KETERLAMBATAN', 'LITERASI', '', '', '']);
+
+  // Baris 3: sub header LITERASI
+  values.push(['', '', '', '', '', '', 'NOMOR LAPORAN', 'TANGGAL LAPOR', 'HARI KETERLAMBATAN', 'STATUS']);
+
+  // Baris data
+  sourceRows.forEach(function (row, idx) {
+    const rowNumber = 4 + idx; // baris ke berapa di sheet (1-indexed), dipakai untuk formula STATUS
+    const tglLaporCol = 'H' + rowNumber;
+    const hariKetCol = 'I' + rowNumber;
+    const statusFormula = '=IF(ISBLANK(' + tglLaporCol + ')=TRUE;"Belum Lapor";IF(' + hariKetCol + '>0;"Terlambat";"Tepat Waktu"))';
+
+    values.push([
+      idx + 1,
+      row[COL_PUJK] || '',
+      row[COL_SEKTOR] || '',
+      row[COL_PENGAWAS] || '',
+      batasPelaporan,
+      maksHari,
+      row[COL_NOMOR_LAPORAN] || '',
+      formatTanggal(row[COL_TANGGAL_KIRIM]),
+      row[COL_HARI_TERLAMBAT] !== undefined && row[COL_HARI_TERLAMBAT] !== '' ? row[COL_HARI_TERLAMBAT] : 0,
+      statusFormula
+    ]);
+  });
+
+  return values;
+}
+
+document.getElementById('uploadBtn').addEventListener('click', async function () {
+  const mode = document.querySelector('input[name="mode"]:checked').value;
+  const tabName = document.getElementById('tabName').value.trim() || 'Data Gabung';
+  const judul = document.getElementById('judulRekap').value.trim();
+  const batasPelaporan = document.getElementById('batasPelaporan').value.trim();
+  const maksHari = document.getElementById('maksHari').value.trim();
+  document.getElementById('uploadBtn').disabled = true;
+
+  try {
+    let spreadsheetId, sheetId;
+    if (mode === 'new') {
+      const title = document.getElementById('newTitle').value.trim() || 'Rekap Data';
+      log('Membuat spreadsheet baru...');
+      const createRes = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + accessToken, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          properties: { title: title },
+          sheets: [{ properties: { title: tabName } }]
+        })
+      });
+      const createData = await createRes.json();
+      if (!createRes.ok) throw new Error((createData.error && createData.error.message) || 'Gagal membuat spreadsheet');
+      spreadsheetId = createData.spreadsheetId;
+      sheetId = createData.sheets[0].properties.sheetId;
+      log('Spreadsheet baru dibuat.');
+    } else {
+      spreadsheetId = document.getElementById('existingId').value.trim();
+      if (!spreadsheetId) throw new Error('Isi ID spreadsheet dulu.');
+
+      log('Mengecek tab "' + tabName + '"...');
+      const metaRes = await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + spreadsheetId, {
+        headers: { 'Authorization': 'Bearer ' + accessToken }
+      });
+      const metaData = await metaRes.json();
+      if (!metaRes.ok) throw new Error((metaData.error && metaData.error.message) || 'Gagal membaca spreadsheet');
+
+      const existingSheet = metaData.sheets.find(function (s) { return s.properties.title === tabName; });
+      if (existingSheet) {
+        sheetId = existingSheet.properties.sheetId;
+      } else {
+        log('Tab belum ada, membuat tab baru "' + tabName + '"...');
+        const addRes = await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + spreadsheetId + ':batchUpdate', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + accessToken, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ requests: [{ addSheet: { properties: { title: tabName } } }] })
+        });
+        const addData = await addRes.json();
+        if (!addRes.ok) throw new Error((addData.error && addData.error.message) || 'Gagal membuat tab baru');
+        sheetId = addData.replies[0].addSheet.properties.sheetId;
+      }
+    }
+
+    const values = buildValues(judul, batasPelaporan, maksHari);
+
+    log('Mengirim data (' + sourceRows.length + ' baris)...');
+    const range = encodeURIComponent(tabName + '!A1');
+    const updateRes = await fetch(
+      'https://sheets.googleapis.com/v4/spreadsheets/' + spreadsheetId + '/values/' + range + '?valueInputOption=USER_ENTERED',
+      {
+        method: 'PUT',
+        headers: { 'Authorization': 'Bearer ' + accessToken, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ range: tabName + '!A1', majorDimension: 'ROWS', values: values })
+      }
+    );
+    const updateData = await updateRes.json();
+    if (!updateRes.ok) throw new Error((updateData.error && updateData.error.message) || 'Gagal menulis data');
+
+    log('Merapikan tampilan (merge sel & format header)...');
+    const mergeRequests = [
+      // Judul: E1:J1
+      { mergeCells: { range: { sheetId: sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 4, endColumnIndex: 10 }, mergeType: 'MERGE_ALL' } },
+      // No: A2:A3
+      { mergeCells: { range: { sheetId: sheetId, startRowIndex: 1, endRowIndex: 3, startColumnIndex: 0, endColumnIndex: 1 }, mergeType: 'MERGE_ALL' } },
+      // PUJK: B2:B3
+      { mergeCells: { range: { sheetId: sheetId, startRowIndex: 1, endRowIndex: 3, startColumnIndex: 1, endColumnIndex: 2 }, mergeType: 'MERGE_ALL' } },
+      // SEKTOR: C2:C3
+      { mergeCells: { range: { sheetId: sheetId, startRowIndex: 1, endRowIndex: 3, startColumnIndex: 2, endColumnIndex: 3 }, mergeType: 'MERGE_ALL' } },
+      // PENGAWAS: D2:D3
+      { mergeCells: { range: { sheetId: sheetId, startRowIndex: 1, endRowIndex: 3, startColumnIndex: 3, endColumnIndex: 4 }, mergeType: 'MERGE_ALL' } },
+      // BATAS PELAPORAN: E2:E3
+      { mergeCells: { range: { sheetId: sheetId, startRowIndex: 1, endRowIndex: 3, startColumnIndex: 4, endColumnIndex: 5 }, mergeType: 'MERGE_ALL' } },
+      // MAKS HARI KETERLAMBATAN: F2:F3
+      { mergeCells: { range: { sheetId: sheetId, startRowIndex: 1, endRowIndex: 3, startColumnIndex: 5, endColumnIndex: 6 }, mergeType: 'MERGE_ALL' } },
+      // LITERASI: G2:J2
+      { mergeCells: { range: { sheetId: sheetId, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 6, endColumnIndex: 10 }, mergeType: 'MERGE_ALL' } },
+      // Bold + center untuk 3 baris header
+      {
+        repeatCell: {
+          range: { sheetId: sheetId, startRowIndex: 0, endRowIndex: 3, startColumnIndex: 0, endColumnIndex: 10 },
+          cell: { userEnteredFormat: { textFormat: { bold: true }, horizontalAlignment: 'CENTER', verticalAlignment: 'MIDDLE', wrapStrategy: 'WRAP' } },
+          fields: 'userEnteredFormat(textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)'
+        }
+      },
+      // Freeze 3 baris header
+      { updateSheetProperties: { properties: { sheetId: sheetId, gridProperties: { frozenRowCount: 3 } }, fields: 'gridProperties.frozenRowCount' } }
+    ];
+
+    const batchRes = await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + spreadsheetId + ':batchUpdate', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + accessToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requests: mergeRequests })
+    });
+    const batchData = await batchRes.json();
+    if (!batchRes.ok) throw new Error((batchData.error && batchData.error.message) || 'Gagal merapikan tampilan');
+
+    log('Selesai. Data berhasil masuk ke Google Sheets.');
+    const link = document.createElement('a');
+    link.href = 'https://docs.google.com/spreadsheets/d/' + spreadsheetId;
+    link.target = '_blank';
+    link.textContent = 'Buka spreadsheet →';
+    logEl.appendChild(link);
+  } catch (err) {
+    log('Error: ' + err.message, true);
+  } finally {
+    document.getElementById('uploadBtn').disabled = false;
+  }
+});
+</script>
+
+</body>
+</html>
