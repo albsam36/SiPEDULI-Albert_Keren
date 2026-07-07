@@ -118,7 +118,7 @@
   <label class="radio"><input type="radio" name="mode" value="existing" /> Pakai spreadsheet yang sudah ada</label>
   <input type="text" id="existingId" placeholder="ID spreadsheet (dari URL-nya)" disabled style="margin-bottom:12px;" />
   <input type="text" id="tabName" placeholder="Nama tab Data Gabung (contoh: Data Gabung)" value="Data Gabung" />
-  <p class="hint">Tab "Sub Sektor" dan "Sektor" akan otomatis dibuat/ditimpa di spreadsheet yang sama.</p>
+  <p class="hint">Tab "Rekap Literasi" akan otomatis dibuat/ditimpa di spreadsheet yang sama.</p>
 </div>
 
 <div class="row">
@@ -195,6 +195,19 @@ const SEKTOR_GROUPS = [
   { name: 'Pergadaian', range: [27, 29] },
   { name: 'ITSK', range: [26, 26] }
 ];
+
+// ====== Layout baris untuk tab gabungan "Rekap Literasi" ======
+// Tabel Sub Sektor: header di baris 1, item mulai baris 2, total di baris (jumlah item + 2)
+// Lalu 1 baris kosong sebagai jarak
+// Tabel Sektor: header setelah baris kosong, item & total menyusul
+const SUB_SEKTOR_HEADER_ROW = 1;
+const SUB_SEKTOR_FIRST_ITEM_ROW = 2;
+const SUB_SEKTOR_LAST_ITEM_ROW = SUB_SEKTOR_LIST.length + 1;
+const SUB_SEKTOR_TOTAL_ROW = SUB_SEKTOR_LIST.length + 2;
+const SEKTOR_HEADER_ROW = SUB_SEKTOR_TOTAL_ROW + 2;
+const SEKTOR_FIRST_ITEM_ROW = SEKTOR_HEADER_ROW + 1;
+const SEKTOR_LAST_ITEM_ROW = SEKTOR_HEADER_ROW + SEKTOR_GROUPS.length;
+const SEKTOR_TOTAL_ROW = SEKTOR_LAST_ITEM_ROW + 1;
 
 let accessToken = null;
 let sourceRows = null;
@@ -388,13 +401,16 @@ function dataGabungFormatRequests(sheetId) {
   ];
 }
 
-function buildSubSektorValues(dataGabungName, lastDataRow) {
+// ====== Tab gabungan "Rekap Literasi" (Sub Sektor + Sektor dalam 1 sheet) ======
+function buildRekapLiterasiValues(dataGabungName, lastDataRow) {
   const ref = "'" + dataGabungName + "'";
   const values = [];
+
+  // ---- Tabel Sub Sektor (baris 1 s/d SUB_SEKTOR_TOTAL_ROW) ----
   values.push(['No', 'Sub Sektor', 'Jumlah PUJK', 'Tepat Waktu', 'Terlambat', 'Belum Lapor']);
 
   SUB_SEKTOR_LIST.forEach(function (name, idx) {
-    const r = idx + 2;
+    const r = SUB_SEKTOR_FIRST_ITEM_ROW + idx;
     values.push([
       idx + 1,
       name,
@@ -405,49 +421,30 @@ function buildSubSektorValues(dataGabungName, lastDataRow) {
     ]);
   });
 
-  const lastItemRow = SUB_SEKTOR_LIST.length + 1;
   values.push([
     '', 'Total',
-    '=SUM(C2:C' + lastItemRow + ')',
-    '=SUM(D2:D' + lastItemRow + ')',
-    '=SUM(E2:E' + lastItemRow + ')',
-    '=SUM(F2:F' + lastItemRow + ')'
+    '=SUM(C' + SUB_SEKTOR_FIRST_ITEM_ROW + ':C' + SUB_SEKTOR_LAST_ITEM_ROW + ')',
+    '=SUM(D' + SUB_SEKTOR_FIRST_ITEM_ROW + ':D' + SUB_SEKTOR_LAST_ITEM_ROW + ')',
+    '=SUM(E' + SUB_SEKTOR_FIRST_ITEM_ROW + ':E' + SUB_SEKTOR_LAST_ITEM_ROW + ')',
+    '=SUM(F' + SUB_SEKTOR_FIRST_ITEM_ROW + ':F' + SUB_SEKTOR_LAST_ITEM_ROW + ')'
   ]);
-  return values;
-}
 
-function subSektorFormatRequests(sheetId) {
-  return [
-    {
-      repeatCell: {
-        range: { sheetId: sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 6 },
-        cell: { userEnteredFormat: { textFormat: { bold: true }, horizontalAlignment: 'CENTER' } },
-        fields: 'userEnteredFormat(textFormat,horizontalAlignment)'
-      }
-    },
-    {
-      repeatCell: {
-        range: { sheetId: sheetId, startRowIndex: SUB_SEKTOR_LIST.length + 1, endRowIndex: SUB_SEKTOR_LIST.length + 2, startColumnIndex: 0, endColumnIndex: 6 },
-        cell: { userEnteredFormat: { textFormat: { bold: true } } },
-        fields: 'userEnteredFormat(textFormat)'
-      }
-    },
-    { updateSheetProperties: { properties: { sheetId: sheetId, gridProperties: { frozenRowCount: 1 } }, fields: 'gridProperties.frozenRowCount' } }
-  ];
-}
+  // ---- baris kosong sebagai jarak antar tabel ----
+  values.push([]);
 
-function buildSektorValues() {
-  const values = [];
+  // ---- Tabel Sektor (mulai baris SEKTOR_HEADER_ROW) ----
   values.push(['No', 'Sektor', 'Jumlah PUJK', 'Tepat Waktu', 'Terlambat', 'Belum Lapor', 'Tepat Waktu', 'Terlambat', 'Tidak Menyampaikan']);
 
   SEKTOR_GROUPS.forEach(function (g, idx) {
-    const r = idx + 2;
-    const startRow = g.range[0] + 1;
-    const endRow = g.range[1] + 1;
+    const r = SEKTOR_FIRST_ITEM_ROW + idx;
+    // g.range mengacu ke posisi (1-based) di SUB_SEKTOR_LIST, yang di tabel Sub Sektor
+    // berada di baris SUB_SEKTOR_FIRST_ITEM_ROW + (posisi - 1)
+    const startRow = SUB_SEKTOR_FIRST_ITEM_ROW + (g.range[0] - 1);
+    const endRow = SUB_SEKTOR_FIRST_ITEM_ROW + (g.range[1] - 1);
 
     function sumFormula(col) {
-      if (startRow === endRow) return "='Sub Sektor'!" + col + startRow;
-      return "=SUM('Sub Sektor'!" + col + startRow + ":" + col + endRow + ")";
+      if (startRow === endRow) return '=' + col + startRow;
+      return '=SUM(' + col + startRow + ':' + col + endRow + ')';
     }
 
     values.push([
@@ -463,41 +460,58 @@ function buildSektorValues() {
     ]);
   });
 
-  const lastItemRow = SEKTOR_GROUPS.length + 1;
-  const totalRow = lastItemRow + 1;
   values.push([
     '', 'Total',
-    '=SUM(C2:C' + lastItemRow + ')',
-    '=SUM(D2:D' + lastItemRow + ')',
-    '=SUM(E2:E' + lastItemRow + ')',
-    '=SUM(F2:F' + lastItemRow + ')',
-    '=IFERROR(D' + totalRow + '/C' + totalRow + ';0)',
-    '=IFERROR(E' + totalRow + '/C' + totalRow + ';0)',
-    '=IFERROR(F' + totalRow + '/C' + totalRow + ';0)'
+    '=SUM(C' + SEKTOR_FIRST_ITEM_ROW + ':C' + SEKTOR_LAST_ITEM_ROW + ')',
+    '=SUM(D' + SEKTOR_FIRST_ITEM_ROW + ':D' + SEKTOR_LAST_ITEM_ROW + ')',
+    '=SUM(E' + SEKTOR_FIRST_ITEM_ROW + ':E' + SEKTOR_LAST_ITEM_ROW + ')',
+    '=SUM(F' + SEKTOR_FIRST_ITEM_ROW + ':F' + SEKTOR_LAST_ITEM_ROW + ')',
+    '=IFERROR(D' + SEKTOR_TOTAL_ROW + '/C' + SEKTOR_TOTAL_ROW + ';0)',
+    '=IFERROR(E' + SEKTOR_TOTAL_ROW + '/C' + SEKTOR_TOTAL_ROW + ';0)',
+    '=IFERROR(F' + SEKTOR_TOTAL_ROW + '/C' + SEKTOR_TOTAL_ROW + ';0)'
   ]);
+
   return values;
 }
 
-function sektorFormatRequests(sheetId) {
-  const lastItemRow = SEKTOR_GROUPS.length + 1;
+function rekapLiterasiFormatRequests(sheetId) {
   return [
+    // Header tabel Sub Sektor
     {
       repeatCell: {
-        range: { sheetId: sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 9 },
+        range: { sheetId: sheetId, startRowIndex: SUB_SEKTOR_HEADER_ROW - 1, endRowIndex: SUB_SEKTOR_HEADER_ROW, startColumnIndex: 0, endColumnIndex: 6 },
         cell: { userEnteredFormat: { textFormat: { bold: true }, horizontalAlignment: 'CENTER' } },
         fields: 'userEnteredFormat(textFormat,horizontalAlignment)'
       }
     },
+    // Baris Total tabel Sub Sektor
     {
       repeatCell: {
-        range: { sheetId: sheetId, startRowIndex: lastItemRow, endRowIndex: lastItemRow + 1, startColumnIndex: 0, endColumnIndex: 9 },
+        range: { sheetId: sheetId, startRowIndex: SUB_SEKTOR_TOTAL_ROW - 1, endRowIndex: SUB_SEKTOR_TOTAL_ROW, startColumnIndex: 0, endColumnIndex: 6 },
         cell: { userEnteredFormat: { textFormat: { bold: true } } },
         fields: 'userEnteredFormat(textFormat)'
       }
     },
+    // Header tabel Sektor
     {
       repeatCell: {
-        range: { sheetId: sheetId, startRowIndex: 1, endRowIndex: lastItemRow + 1, startColumnIndex: 6, endColumnIndex: 9 },
+        range: { sheetId: sheetId, startRowIndex: SEKTOR_HEADER_ROW - 1, endRowIndex: SEKTOR_HEADER_ROW, startColumnIndex: 0, endColumnIndex: 9 },
+        cell: { userEnteredFormat: { textFormat: { bold: true }, horizontalAlignment: 'CENTER' } },
+        fields: 'userEnteredFormat(textFormat,horizontalAlignment)'
+      }
+    },
+    // Baris Total tabel Sektor
+    {
+      repeatCell: {
+        range: { sheetId: sheetId, startRowIndex: SEKTOR_TOTAL_ROW - 1, endRowIndex: SEKTOR_TOTAL_ROW, startColumnIndex: 0, endColumnIndex: 9 },
+        cell: { userEnteredFormat: { textFormat: { bold: true } } },
+        fields: 'userEnteredFormat(textFormat)'
+      }
+    },
+    // Format persen untuk kolom G, H, I di tabel Sektor
+    {
+      repeatCell: {
+        range: { sheetId: sheetId, startRowIndex: SEKTOR_FIRST_ITEM_ROW - 1, endRowIndex: SEKTOR_TOTAL_ROW, startColumnIndex: 6, endColumnIndex: 9 },
         cell: { userEnteredFormat: { numberFormat: { type: 'PERCENT', pattern: '0.00%' } } },
         fields: 'userEnteredFormat.numberFormat'
       }
@@ -540,17 +554,11 @@ document.getElementById('uploadBtn').addEventListener('click', async function ()
 
     const lastDataRow = DATA_START_ROW + sourceRows.length - 1;
 
-    log('Menyiapkan tab "Sub Sektor"...');
-    const subSektorSheetId = await ensureSheet(spreadsheetId, 'Sub Sektor');
-    await writeValues(spreadsheetId, 'Sub Sektor', buildSubSektorValues(dataGabungName, lastDataRow));
-    await batchFormat(spreadsheetId, subSektorFormatRequests(subSektorSheetId));
-    log('Tab "Sub Sektor" selesai.');
-
-    log('Menyiapkan tab "Sektor"...');
-    const sektorSheetId = await ensureSheet(spreadsheetId, 'Sektor');
-    await writeValues(spreadsheetId, 'Sektor', buildSektorValues());
-    await batchFormat(spreadsheetId, sektorFormatRequests(sektorSheetId));
-    log('Tab "Sektor" selesai.');
+    log('Menyiapkan tab "Rekap Literasi"...');
+    const rekapLiterasiSheetId = await ensureSheet(spreadsheetId, 'Rekap Literasi');
+    await writeValues(spreadsheetId, 'Rekap Literasi', buildRekapLiterasiValues(dataGabungName, lastDataRow));
+    await batchFormat(spreadsheetId, rekapLiterasiFormatRequests(rekapLiterasiSheetId));
+    log('Tab "Rekap Literasi" selesai.');
 
     log('Semua tab berhasil dibuat.');
     const link = document.createElement('a');
