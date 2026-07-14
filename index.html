@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Excel ke Google Sheets - Rekap Realisasi</title>
+<title>Excel ke Google Sheets</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async></script>
 <style>
@@ -72,6 +72,7 @@
   td { border: 1px solid #e3e0d6; padding: 4px 8px; }
   #log { font-size: 13px; color: #6b6a63; white-space: pre-line; margin-top: 16px; }
   #log a { color: #b45532; }
+  #log .warn { color: #b45532; }
   .row { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
 </style>
 </head>
@@ -95,7 +96,13 @@
 </div>
 
 <div class="card">
-  <p class="label">2. Info Rekap (berlaku untuk semua baris)</p>
+  <p class="label">2. File Excel PUJK Dikecualikan (opsional)</p>
+  <input type="file" id="excludeFileInput" accept=".xlsx,.xls" />
+  <p class="hint" id="excludeInfo">Kolom pertama / kolom "Nama PUJK" berisi daftar nama PUJK yang dikecualikan dari kewajiban lapor. Kalau tidak diisi, semua PUJK dianggap wajib lapor. Variasi penulisan seperti "PT" di depan/belakang, "BPR" vs "Bank Perekonomian Rakyat", dan nama alternatif dalam kurung akan otomatis disamakan.</p>
+</div>
+
+<div class="card">
+  <p class="label">3. Info Rekap (berlaku untuk semua baris)</p>
   <label class="sub-label">Judul rekap</label>
   <input type="text" id="judulRekap" placeholder="Contoh: REALISASI SEMESTER II TAHUN 2025" />
   <div class="field-row">
@@ -112,12 +119,13 @@
 </div>
 
 <div class="card">
-  <p class="label">3. Tujuan</p>
+  <p class="label">4. Tujuan</p>
   <label class="radio"><input type="radio" name="mode" value="new" checked /> Buat spreadsheet baru</label>
   <input type="text" id="newTitle" placeholder="Nama spreadsheet baru" style="margin-bottom:12px;" />
   <label class="radio"><input type="radio" name="mode" value="existing" /> Pakai spreadsheet yang sudah ada</label>
   <input type="text" id="existingId" placeholder="ID spreadsheet (dari URL-nya)" disabled style="margin-bottom:12px;" />
   <input type="text" id="tabName" placeholder="Nama tab Data Gabung (contoh: Data Gabung)" value="Data Gabung" />
+  <p class="hint">Tab "Rekap Literasi" akan otomatis dibuat/ditimpa di spreadsheet yang sama. Daftar Sub Sektor & Sektor di tab rekap dibuat otomatis dari data yang diupload (bukan daftar tetap), jadi kalau ada sub sektor baru akan otomatis ikut muncul.</p>
 </div>
 
 <div class="row">
@@ -138,85 +146,148 @@ const COL_NOMOR_LAPORAN = 'No. Laporan';
 const COL_TANGGAL_KIRIM = 'Tanggal Kirim';
 const COL_HARI_TERLAMBAT = 'Keterlambatan (Hr)';
 
-// Layout kolom di tab Data Gabung yang kita generate sendiri:
-// A=No, B=PUJK, C=SEKTOR, D=PENGAWAS, E=BATAS PELAPORAN, F=MAKS HARI,
-// G=NOMOR LAPORAN, H=TANGGAL LAPOR, I=HARI KETERLAMBATAN, J=STATUS
 const SEKTOR_COL = 'C';
 const STATUS_COL = 'J';
+const WAJIB_LAPOR_COL = 'K';
 const DATA_START_ROW = 4;
 
-const SUB_SEKTOR_LIST = [
-  'Asuransi Jiwa Konvensional',
-  'Asuransi Jiwa Syariah',
-  'Asuransi Sosial',
-  'Asuransi Umum Konvensional',
-  'Asuransi Umum Syariah',
-  'Bank Umum Konvensional',
-  'Bank Umum Syariah',
-  'BPR Konvensional',
-  'BPR Syariah',
-  'Dana Pensiun Lembaga Keuangan Konvensional',
-  'Layanan Urun Dana',
-  'Layanan Urun Dana Syariah',
-  'Lembaga Keuangan Khusus (PNM, SMF, LPEI, BP TAPERA)',
-  'Manajer Investasi',
-  'Modal Ventura Konvensional',
-  'Modal Ventura Syariah',
-  'Penjamin Emisi Efek',
-  'Perantara Pedagang Efek yang Mengadministrasikan Rekening Efek Nasabah',
-  'Perantara Pedagang Efek yang Tidak Mengadministrasikan Rekening Efek Nasabah',
-  'Perusahaan Pembiayaan Konvensional',
-  'Perusahaan Pembiayaan Syariah',
-  'Perusahaan Penjaminan Konvensional',
-  'Perusahaan Penjaminan Syariah',
-  'Perusahaan Penyelenggara Layanan Pendanaan Berbasis Teknologi Konvensional',
-  'Perusahaan Penyelenggara Layanan Pendanaan Berbasis Teknologi Syariah',
-  'Perusahaan Perdagangan Aset Keuangan Digital',
-  'Perusahaan Pergadaian Pemerintah',
-  'Perusahaan Pergadaian Swasta Konvensional',
-  'Perusahaan Pergadaian Swasta Syariah'
+// ======================================================================
+// PETA PENGELOMPOKAN: Sub Sub Sektor -> Sektor besar (15 kategori)
+// Ini dipakai untuk MENGELOMPOKKAN, bukan daftar tetap yang harus ada.
+// Daftar Sub Sektor aktual di tab Rekap akan dibuat otomatis dari nilai
+// unik yang ada di file Excel yang diupload. Kalau ada Sub Sub Sektor
+// yang muncul di data tapi belum ada di peta ini, tool akan otomatis
+// memasukkannya ke grup "Lainnya (Belum Dikategorikan)" dan memberi
+// peringatan di log -- silakan tambahkan ke peta ini kalau perlu.
+// ======================================================================
+const SEKTOR_TAXONOMY = [
+  { name: 'Perasuransian', subSektor: ['Asuransi Jiwa Konvensional', 'Asuransi Jiwa Syariah', 'Asuransi Sosial', 'Asuransi Umum Konvensional', 'Asuransi Umum Syariah'] },
+  { name: 'Bank Umum', subSektor: ['Bank Umum Konvensional', 'Bank Umum Syariah'] },
+  { name: 'BPR/S', subSektor: ['BPR Konvensional', 'BPR Syariah'] },
+  { name: 'Dana Pensiun', subSektor: ['Dana Pensiun Lembaga Keuangan Konvensional'] },
+  { name: 'P2P Lending', subSektor: ['Perusahaan Penyelenggara Layanan Pendanaan Berbasis Teknologi Konvensional', 'Perusahaan Penyelenggara Layanan Pendanaan Berbasis Teknologi Syariah'] },
+  { name: 'SCF', subSektor: ['Layanan Urun Dana', 'Layanan Urun Dana Syariah'] },
+  { name: 'Lembaga Keuangan Khusus', subSektor: ['Lembaga Keuangan Khusus (PNM, SMF, LPEI, BP TAPERA)'] },
+  { name: 'Manajer Investasi', subSektor: ['Manajer Investasi'] },
+  { name: 'Modal Ventura', subSektor: ['Modal Ventura Konvensional', 'Modal Ventura Syariah'] },
+  { name: 'Penjamin Emisi Efek', subSektor: ['Penjamin Emisi Efek'] },
+  { name: 'Perantara Pedagang Efek', subSektor: ['Perantara Pedagang Efek yang Mengadministrasikan Rekening Efek Nasabah', 'Perantara Pedagang Efek yang Tidak Mengadministrasikan Rekening Efek Nasabah'] },
+  { name: 'Pialang & Pedagang Berjangka', subSektor: ['Pialang Berjangka Derivatif Keuangan', 'Pedagang Berjangka Derivatif Keuangan'] },
+  { name: 'Perusahaan Pembiayaan', subSektor: ['Perusahaan Pembiayaan Konvensional', 'Perusahaan Pembiayaan Syariah'] },
+  { name: 'Perusahaan Penjaminan', subSektor: ['Perusahaan Penjaminan Konvensional', 'Perusahaan Penjaminan Syariah'] },
+  { name: 'Pergadaian', subSektor: ['Perusahaan Pergadaian Pemerintah', 'Perusahaan Pergadaian Swasta Konvensional', 'Perusahaan Pergadaian Swasta Syariah'] },
+  { name: 'ITSK', subSektor: ['Perusahaan Perdagangan Aset Keuangan Digital'] }
 ];
 
-const SEKTOR_GROUPS = [
-  { name: 'Perasuransian', range: [1, 5] },
-  { name: 'Bank Umum', range: [6, 7] },
-  { name: 'BPR/S', range: [8, 9] },
-  { name: 'Dana Pensiun', range: [10, 10] },
-  { name: 'P2P Lending', range: [24, 25] },
-  { name: 'SCF', range: [11, 12] },
-  { name: 'Lembaga Keuangan Khusus', range: [13, 13] },
-  { name: 'Manajer Investasi', range: [14, 14] },
-  { name: 'Modal Ventura', range: [15, 16] },
-  { name: 'Penjamin Emisi Efek', range: [17, 17] },
-  { name: 'Perantara Pedagang Efek', range: [18, 19] },
-  { name: 'Perusahaan Pembiayaan', range: [20, 21] },
-  { name: 'Perusahaan Penjaminan', range: [22, 23] },
-  { name: 'Pergadaian', range: [27, 29] },
-  { name: 'ITSK', range: [26, 26] }
-];
-
-// ====== Layout baris untuk tab gabungan "Rekap Literasi" ======
-// Tabel Sub Sektor: header di baris 1, item mulai baris 2, total di baris (jumlah item + 2)
-// Lalu 1 baris kosong sebagai jarak
-// Tabel Sektor: header setelah baris kosong, item & total menyusul
 const SUB_SEKTOR_HEADER_ROW = 1;
 const SUB_SEKTOR_FIRST_ITEM_ROW = 2;
-const SUB_SEKTOR_LAST_ITEM_ROW = SUB_SEKTOR_LIST.length + 1;
-const SUB_SEKTOR_TOTAL_ROW = SUB_SEKTOR_LIST.length + 2;
-const SEKTOR_HEADER_ROW = SUB_SEKTOR_TOTAL_ROW + 2;
-const SEKTOR_FIRST_ITEM_ROW = SEKTOR_HEADER_ROW + 1;
-const SEKTOR_LAST_ITEM_ROW = SEKTOR_HEADER_ROW + SEKTOR_GROUPS.length;
-const SEKTOR_TOTAL_ROW = SEKTOR_LAST_ITEM_ROW + 1;
+
+
+const ENTITY_SYNONYMS = [
+  [/\bbank perekonomian rakyat syariah\b/g, 'bprs'],
+  [/\bbank perkreditan rakyat syariah\b/g, 'bprs'],
+  [/\bbank pembiayaan rakyat syariah\b/g, 'bprs'],
+  [/\bbank perekonomian rakyat\b/g, 'bpr'],
+  [/\bbank perkreditan rakyat\b/g, 'bpr']
+];
+const NAME_STOPWORDS = ['pt', 'tbk', 'persero', 'perseroan', 'terbatas', 'cv'];
+
+function extractParenAlt(str) {
+  const m = String(str || '').match(/\(([^)]+)\)/);
+  return m ? m[1] : null;
+}
+
+function stripParens(str) {
+  return String(str || '').replace(/\([^)]*\)/g, ' ');
+}
+
+function normalizeName(str) {
+  if (!str) return '';
+  let s = String(str)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ');
+  ENTITY_SYNONYMS.forEach(function (pair) { s = s.replace(pair[0], pair[1]); });
+  const tokens = s.split(/\s+/).filter(function (t) { return t && NAME_STOPWORDS.indexOf(t) === -1; });
+  tokens.sort();
+  return tokens.join(' ');
+}
+
+function nameVariants(str) {
+  const variants = [];
+  const alt = extractParenAlt(str);
+  const normMain = normalizeName(stripParens(str));
+  if (normMain) variants.push(normMain);
+  if (alt) {
+    const normAlt = normalizeName(alt);
+    if (normAlt && variants.indexOf(normAlt) === -1) variants.push(normAlt);
+  }
+  const normWhole = normalizeName(str);
+  if (normWhole && variants.indexOf(normWhole) === -1) variants.push(normWhole);
+  return variants;
+}
+
+
+function extractAcronymTokens(str) {
+  const matches = String(stripParens(str)).match(/\b[A-Z]{2,8}\b/g) || [];
+  return matches
+    .map(function (t) { return t.toLowerCase(); })
+    .filter(function (t) { return NAME_STOPWORDS.indexOf(t) === -1; });
+}
+
+function computeInitials(str) {
+  const cleaned = String(stripParens(str))
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ');
+  const tokens = cleaned.split(/\s+/).filter(function (t) { return t && NAME_STOPWORDS.indexOf(t) === -1; });
+  return tokens.map(function (t) { return t[0]; }).join('');
+}
+
+function acronymMatches(nameA, nameB) {
+  const acrA = extractAcronymTokens(nameA);
+  const acrB = extractAcronymTokens(nameB);
+  const initA = computeInitials(nameA);
+  const initB = computeInitials(nameB);
+  // syarat minimal 3 huruf supaya tidak salah cocok dengan singkatan pendek yang kebetulan sama
+  return (acrA.indexOf(initB) !== -1 && initB.length >= 3) ||
+         (acrB.indexOf(initA) !== -1 && initA.length >= 3);
+}
+
+function bigrams(str) {
+  const s = str.replace(/\s+/g, '');
+  const grams = [];
+  for (let i = 0; i < s.length - 1; i++) grams.push(s.substr(i, 2));
+  return grams;
+}
+
+function diceSimilarity(a, b) {
+  const ga = bigrams(a);
+  const gb = bigrams(b).slice();
+  if (!ga.length || !gb.length) return 0;
+  let matches = 0;
+  ga.forEach(function (g) {
+    const idx = gb.indexOf(g);
+    if (idx !== -1) { matches++; gb.splice(idx, 1); }
+  });
+  return (2 * matches) / (ga.length + gb.length);
+}
 
 let accessToken = null;
 let sourceRows = null;
 let tokenClient = null;
+let excludedNormalizedSet = [];
+let excludedOriginalNames = [];
 
 const logEl = document.getElementById('log');
 function log(msg, isError) {
   const line = document.createElement('div');
   line.textContent = msg;
   if (isError) line.style.color = '#b3261e';
+  logEl.appendChild(line);
+}
+function logWarn(msg) {
+  const line = document.createElement('div');
+  line.textContent = msg;
+  line.className = 'warn';
   logEl.appendChild(line);
 }
 
@@ -227,6 +298,13 @@ document.querySelectorAll('input[name="mode"]').forEach(function (r) {
     document.getElementById('existingId').disabled = isNew;
   });
 });
+
+function extractSpreadsheetId(input) {
+  if (!input) return '';
+  const match = input.match(/\/d\/([a-zA-Z0-9-_]+)/);
+  if (match) return match[1];
+  return input.trim();
+}
 
 function formatTanggal(val) {
   if (!val) return '';
@@ -281,10 +359,109 @@ document.getElementById('fileInput').addEventListener('change', function (e) {
     });
     document.getElementById('previewWrap').style.display = 'block';
     log('File terbaca: ' + file.name + ' (' + sourceRows.length + ' baris)');
+    runExclusionMatchCheck();
+    previewTaxonomy();
     checkReady();
   };
   reader.readAsArrayBuffer(file);
 });
+
+// Tampilkan pratinjau pengelompokan sub sektor begitu file dibaca, supaya
+// kalau ada sub sektor baru yang belum dikenal, user langsung tahu dari awal.
+function previewTaxonomy() {
+  if (!sourceRows) return;
+  const taxonomy = buildDynamicTaxonomy(sourceRows, false);
+  log('Ditemukan ' + taxonomy.subSektorList.length + ' Sub Sektor unik, dikelompokkan ke ' + taxonomy.groups.length + ' Sektor.');
+}
+
+document.getElementById('excludeFileInput').addEventListener('change', function (e) {
+  const file = e.target.files[0];
+  const info = document.getElementById('excludeInfo');
+  if (!file) {
+    excludedNormalizedSet = [];
+    excludedOriginalNames = [];
+    info.textContent = 'Kolom pertama / kolom "Nama PUJK" berisi daftar nama PUJK yang dikecualikan dari kewajiban lapor. Kalau tidak diisi, semua PUJK dianggap wajib lapor.';
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = function (evt) {
+    const data = new Uint8Array(evt.target.result);
+    const wb = XLSX.read(data, { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+
+    excludedNormalizedSet = [];
+    excludedOriginalNames = [];
+
+    rows.forEach(function (row) {
+      let val = row[COL_PUJK];
+      if (val === undefined || val === '') {
+        const firstKey = Object.keys(row)[0];
+        val = firstKey !== undefined ? row[firstKey] : '';
+      }
+      val = String(val).trim();
+      if (!val) return;
+      excludedOriginalNames.push(val);
+      nameVariants(val).forEach(function (v) {
+        if (v && excludedNormalizedSet.indexOf(v) === -1) excludedNormalizedSet.push(v);
+      });
+    });
+
+    info.textContent = 'File pengecualian terbaca: ' + file.name + ' (' + excludedOriginalNames.length + ' PUJK dikecualikan).';
+    log('File PUJK dikecualikan terbaca: ' + excludedOriginalNames.length + ' nama.');
+    runExclusionMatchCheck();
+  };
+  reader.readAsArrayBuffer(file);
+});
+
+
+function runExclusionMatchCheck() {
+  if (!sourceRows || !excludedOriginalNames.length) return;
+  const SIMILARITY_WARN_THRESHOLD = 0.8;
+  let matchedCount = 0;
+  const warnings = [];
+
+  sourceRows.forEach(function (row) {
+    const pujkName = row[COL_PUJK] || '';
+    if (!pujkName) return;
+    if (isPujkExcluded(pujkName)) { matchedCount++; return; }
+
+    const mainVariant = normalizeName(stripParens(pujkName));
+    let bestScore = 0;
+    let bestMatch = null;
+    excludedOriginalNames.forEach(function (exName) {
+      const exVariant = normalizeName(stripParens(exName));
+      const score = diceSimilarity(mainVariant, exVariant);
+      if (score > bestScore) { bestScore = score; bestMatch = exName; }
+    });
+    if (bestMatch && bestScore >= SIMILARITY_WARN_THRESHOLD) {
+      warnings.push('"' + pujkName + '" mirip dengan pengecualian "' + bestMatch + '" (skor ' + Math.round(bestScore * 100) + '%) — tidak otomatis dikecualikan, cek manual jika ini seharusnya sama.');
+    }
+  });
+
+  log('Pengecekan pengecualian: ' + matchedCount + ' PUJK cocok persis dengan daftar pengecualian.');
+  if (warnings.length) {
+    log('Ditemukan ' + warnings.length + ' nama yang MIRIP tapi tidak dicocokkan otomatis:');
+    warnings.forEach(function (w) { log('  - ' + w); });
+  }
+}
+
+function isPujkExcluded(pujkName) {
+  if (!excludedOriginalNames.length) return false;
+
+
+  const variants = nameVariants(pujkName);
+  for (let i = 0; i < variants.length; i++) {
+    if (excludedNormalizedSet.indexOf(variants[i]) !== -1) return true;
+  }
+
+
+  for (let i = 0; i < excludedOriginalNames.length; i++) {
+    if (acronymMatches(pujkName, excludedOriginalNames[i])) return true;
+  }
+
+  return false;
+}
 
 document.getElementById('connectBtn').addEventListener('click', function () {
   if (!CLIENT_ID) { log('Isi dulu CLIENT_ID di dalam kode index.html.', true); return; }
@@ -353,9 +530,9 @@ async function batchFormat(spreadsheetId, requests) {
 
 function buildDataGabungValues(judul, batasPelaporan, maksHari) {
   const values = [];
-  values.push(['', '', '', '', judul, '', '', '', '', '']);
-  values.push(['No', 'PUJK', 'SEKTOR', 'PENGAWAS', 'BATAS PELAPORAN', 'MAKS HARI KETERLAMBATAN', 'LITERASI', '', '', '']);
-  values.push(['', '', '', '', '', '', 'NOMOR LAPORAN', 'TANGGAL LAPOR', 'HARI KETERLAMBATAN', 'STATUS']);
+  values.push(['', '', '', '', judul, '', '', '', '', '', '']);
+  values.push(['No', 'PUJK', 'SEKTOR', 'PENGAWAS', 'BATAS PELAPORAN', 'MAKS HARI KETERLAMBATAN', 'LITERASI', '', '', '', 'WAJIB LAPOR']);
+  values.push(['', '', '', '', '', '', 'NOMOR LAPORAN', 'TANGGAL LAPOR', 'HARI KETERLAMBATAN', 'STATUS', '']);
 
   sourceRows.forEach(function (row, idx) {
     const rowNumber = DATA_START_ROW + idx;
@@ -363,9 +540,12 @@ function buildDataGabungValues(judul, batasPelaporan, maksHari) {
     const hariKetCol = 'I' + rowNumber;
     const statusFormula = '=IF(ISBLANK(' + tglLaporCol + ')=TRUE;"Belum Lapor";IF(' + hariKetCol + '>0;"Terlambat";"Tepat Waktu"))';
 
+    const pujkName = row[COL_PUJK] || '';
+    const wajibLapor = isPujkExcluded(pujkName) ? 0 : 1;
+
     values.push([
       idx + 1,
-      row[COL_PUJK] || '',
+      pujkName,
       row[COL_SEKTOR] || '',
       row[COL_PENGAWAS] || '',
       batasPelaporan,
@@ -373,7 +553,8 @@ function buildDataGabungValues(judul, batasPelaporan, maksHari) {
       row[COL_NOMOR_LAPORAN] || '',
       formatTanggal(row[COL_TANGGAL_KIRIM]),
       row[COL_HARI_TERLAMBAT] !== undefined && row[COL_HARI_TERLAMBAT] !== '' ? row[COL_HARI_TERLAMBAT] : 0,
-      statusFormula
+      statusFormula,
+      wajibLapor
     ]);
   });
   return values;
@@ -381,7 +562,7 @@ function buildDataGabungValues(judul, batasPelaporan, maksHari) {
 
 function dataGabungFormatRequests(sheetId) {
   return [
-    { mergeCells: { range: { sheetId: sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 4, endColumnIndex: 10 }, mergeType: 'MERGE_ALL' } },
+    { mergeCells: { range: { sheetId: sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 4, endColumnIndex: 11 }, mergeType: 'MERGE_ALL' } },
     { mergeCells: { range: { sheetId: sheetId, startRowIndex: 1, endRowIndex: 3, startColumnIndex: 0, endColumnIndex: 1 }, mergeType: 'MERGE_ALL' } },
     { mergeCells: { range: { sheetId: sheetId, startRowIndex: 1, endRowIndex: 3, startColumnIndex: 1, endColumnIndex: 2 }, mergeType: 'MERGE_ALL' } },
     { mergeCells: { range: { sheetId: sheetId, startRowIndex: 1, endRowIndex: 3, startColumnIndex: 2, endColumnIndex: 3 }, mergeType: 'MERGE_ALL' } },
@@ -389,9 +570,10 @@ function dataGabungFormatRequests(sheetId) {
     { mergeCells: { range: { sheetId: sheetId, startRowIndex: 1, endRowIndex: 3, startColumnIndex: 4, endColumnIndex: 5 }, mergeType: 'MERGE_ALL' } },
     { mergeCells: { range: { sheetId: sheetId, startRowIndex: 1, endRowIndex: 3, startColumnIndex: 5, endColumnIndex: 6 }, mergeType: 'MERGE_ALL' } },
     { mergeCells: { range: { sheetId: sheetId, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 6, endColumnIndex: 10 }, mergeType: 'MERGE_ALL' } },
+    { mergeCells: { range: { sheetId: sheetId, startRowIndex: 1, endRowIndex: 3, startColumnIndex: 10, endColumnIndex: 11 }, mergeType: 'MERGE_ALL' } },
     {
       repeatCell: {
-        range: { sheetId: sheetId, startRowIndex: 0, endRowIndex: 3, startColumnIndex: 0, endColumnIndex: 10 },
+        range: { sheetId: sheetId, startRowIndex: 0, endRowIndex: 3, startColumnIndex: 0, endColumnIndex: 11 },
         cell: { userEnteredFormat: { textFormat: { bold: true }, horizontalAlignment: 'CENTER', verticalAlignment: 'MIDDLE', wrapStrategy: 'WRAP' } },
         fields: 'userEnteredFormat(textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)'
       }
@@ -400,50 +582,97 @@ function dataGabungFormatRequests(sheetId) {
   ];
 }
 
-// ====== Tab gabungan "Rekap Literasi" (Sub Sektor + Sektor dalam 1 sheet) ======
-function buildRekapLiterasiValues(dataGabungName, lastDataRow) {
+// ======================================================================
+// Membangun daftar Sub Sektor & pengelompokan Sektor secara DINAMIS dari
+// data yang diupload (bukan daftar tetap). Sub Sektor yang dikenal (ada
+// di SEKTOR_TAXONOMY) diurutkan sesuai urutan taksonomi supaya tampilan
+// tetap konsisten antar periode. Sub Sektor yang BELUM dikenal otomatis
+// masuk ke grup "Lainnya (Belum Dikategorikan)" di baris paling bawah.
+// ======================================================================
+function buildDynamicTaxonomy(rows, doLog) {
+  const seenSet = {};
+  const seenList = [];
+  rows.forEach(function (row) {
+    const v = (row[COL_SEKTOR] || '').toString().trim();
+    if (v && !seenSet[v]) { seenSet[v] = true; seenList.push(v); }
+  });
+
+  const knownSet = {};
+  SEKTOR_TAXONOMY.forEach(function (g) {
+    g.subSektor.forEach(function (s) { knownSet[s] = true; });
+  });
+
+  const subSektorList = [];
+  const groups = [];
+  let cursorRow = SUB_SEKTOR_FIRST_ITEM_ROW;
+
+  SEKTOR_TAXONOMY.forEach(function (g) {
+    const present = g.subSektor.filter(function (s) { return seenSet[s]; });
+    if (!present.length) return;
+    const startRow = cursorRow;
+    present.forEach(function (s) { subSektorList.push(s); cursorRow++; });
+    groups.push({ name: g.name, startRow: startRow, endRow: cursorRow - 1 });
+  });
+
+  const unknown = seenList.filter(function (s) { return !knownSet[s]; }).sort();
+  if (unknown.length) {
+    const startRow = cursorRow;
+    unknown.forEach(function (s) { subSektorList.push(s); cursorRow++; });
+    groups.push({ name: 'Lainnya (Belum Dikategorikan)', startRow: startRow, endRow: cursorRow - 1 });
+    if (doLog) {
+      logWarn('PERHATIAN: ' + unknown.length + ' Sub Sektor belum ada di peta pengelompokan, otomatis masuk grup "Lainnya": ' + unknown.join(', ') + '. Silakan tambahkan ke SEKTOR_TAXONOMY di kode kalau perlu grup sendiri.');
+    }
+  }
+
+  return { subSektorList: subSektorList, groups: groups };
+}
+
+function buildRekapLiterasiValues(dataGabungName, lastDataRow, taxonomy) {
   const ref = "'" + dataGabungName + "'";
+  const subSektorList = taxonomy.subSektorList;
+  const groups = taxonomy.groups;
+
+  const subSektorLastRow = SUB_SEKTOR_FIRST_ITEM_ROW + subSektorList.length - 1;
+  const subSektorTotalRow = subSektorLastRow + 1;
+  const sektorHeaderRow = subSektorTotalRow + 2;
+  const sektorFirstRow = sektorHeaderRow + 1;
+  const sektorLastRow = sektorHeaderRow + groups.length;
+  const sektorTotalRow = sektorLastRow + 1;
+
   const values = [];
 
-  // ---- Tabel Sub Sektor (baris 1 s/d SUB_SEKTOR_TOTAL_ROW) ----
   values.push(['No', 'Sub Sektor', 'Jumlah PUJK', 'Tepat Waktu', 'Terlambat', 'Belum Lapor']);
 
-  SUB_SEKTOR_LIST.forEach(function (name, idx) {
+  subSektorList.forEach(function (name, idx) {
     const r = SUB_SEKTOR_FIRST_ITEM_ROW + idx;
     values.push([
       idx + 1,
       name,
-      '=COUNTIFS(' + ref + '!$' + SEKTOR_COL + '$' + DATA_START_ROW + ':$' + SEKTOR_COL + '$' + lastDataRow + ';B' + r + ')',
-      '=COUNTIFS(' + ref + '!$' + STATUS_COL + '$' + DATA_START_ROW + ':$' + STATUS_COL + '$' + lastDataRow + ';"Tepat Waktu";' + ref + '!$' + SEKTOR_COL + '$' + DATA_START_ROW + ':$' + SEKTOR_COL + '$' + lastDataRow + ';B' + r + ')',
-      '=COUNTIFS(' + ref + '!$' + STATUS_COL + '$' + DATA_START_ROW + ':$' + STATUS_COL + '$' + lastDataRow + ';"Terlambat";' + ref + '!$' + SEKTOR_COL + '$' + DATA_START_ROW + ':$' + SEKTOR_COL + '$' + lastDataRow + ';B' + r + ')',
-      '=COUNTIFS(' + ref + '!$' + STATUS_COL + '$' + DATA_START_ROW + ':$' + STATUS_COL + '$' + lastDataRow + ';"Belum Lapor";' + ref + '!$' + SEKTOR_COL + '$' + DATA_START_ROW + ':$' + SEKTOR_COL + '$' + lastDataRow + ';B' + r + ')'
+      '=COUNTIFS(' + ref + '!$' + SEKTOR_COL + '$' + DATA_START_ROW + ':$' + SEKTOR_COL + '$' + lastDataRow + ';B' + r + ';' + ref + '!$' + WAJIB_LAPOR_COL + '$' + DATA_START_ROW + ':$' + WAJIB_LAPOR_COL + '$' + lastDataRow + ';1)',
+      '=COUNTIFS(' + ref + '!$' + STATUS_COL + '$' + DATA_START_ROW + ':$' + STATUS_COL + '$' + lastDataRow + ';"Tepat Waktu";' + ref + '!$' + SEKTOR_COL + '$' + DATA_START_ROW + ':$' + SEKTOR_COL + '$' + lastDataRow + ';B' + r + ';' + ref + '!$' + WAJIB_LAPOR_COL + '$' + DATA_START_ROW + ':$' + WAJIB_LAPOR_COL + '$' + lastDataRow + ';1)',
+      '=COUNTIFS(' + ref + '!$' + STATUS_COL + '$' + DATA_START_ROW + ':$' + STATUS_COL + '$' + lastDataRow + ';"Terlambat";' + ref + '!$' + SEKTOR_COL + '$' + DATA_START_ROW + ':$' + SEKTOR_COL + '$' + lastDataRow + ';B' + r + ';' + ref + '!$' + WAJIB_LAPOR_COL + '$' + DATA_START_ROW + ':$' + WAJIB_LAPOR_COL + '$' + lastDataRow + ';1)',
+      '=COUNTIFS(' + ref + '!$' + STATUS_COL + '$' + DATA_START_ROW + ':$' + STATUS_COL + '$' + lastDataRow + ';"Belum Lapor";' + ref + '!$' + SEKTOR_COL + '$' + DATA_START_ROW + ':$' + SEKTOR_COL + '$' + lastDataRow + ';B' + r + ';' + ref + '!$' + WAJIB_LAPOR_COL + '$' + DATA_START_ROW + ':$' + WAJIB_LAPOR_COL + '$' + lastDataRow + ';1)'
     ]);
   });
 
   values.push([
     '', 'Total',
-    '=SUM(C' + SUB_SEKTOR_FIRST_ITEM_ROW + ':C' + SUB_SEKTOR_LAST_ITEM_ROW + ')',
-    '=SUM(D' + SUB_SEKTOR_FIRST_ITEM_ROW + ':D' + SUB_SEKTOR_LAST_ITEM_ROW + ')',
-    '=SUM(E' + SUB_SEKTOR_FIRST_ITEM_ROW + ':E' + SUB_SEKTOR_LAST_ITEM_ROW + ')',
-    '=SUM(F' + SUB_SEKTOR_FIRST_ITEM_ROW + ':F' + SUB_SEKTOR_LAST_ITEM_ROW + ')'
+    '=SUM(C' + SUB_SEKTOR_FIRST_ITEM_ROW + ':C' + subSektorLastRow + ')',
+    '=SUM(D' + SUB_SEKTOR_FIRST_ITEM_ROW + ':D' + subSektorLastRow + ')',
+    '=SUM(E' + SUB_SEKTOR_FIRST_ITEM_ROW + ':E' + subSektorLastRow + ')',
+    '=SUM(F' + SUB_SEKTOR_FIRST_ITEM_ROW + ':F' + subSektorLastRow + ')'
   ]);
 
-  // ---- baris kosong sebagai jarak antar tabel ----
   values.push([]);
 
-  // ---- Tabel Sektor (mulai baris SEKTOR_HEADER_ROW) ----
   values.push(['No', 'Sektor', 'Jumlah PUJK', 'Tepat Waktu', 'Terlambat', 'Belum Lapor', 'Tepat Waktu', 'Terlambat', 'Tidak Menyampaikan']);
 
-  SEKTOR_GROUPS.forEach(function (g, idx) {
-    const r = SEKTOR_FIRST_ITEM_ROW + idx;
-    // g.range mengacu ke posisi (1-based) di SUB_SEKTOR_LIST, yang di tabel Sub Sektor
-    // berada di baris SUB_SEKTOR_FIRST_ITEM_ROW + (posisi - 1)
-    const startRow = SUB_SEKTOR_FIRST_ITEM_ROW + (g.range[0] - 1);
-    const endRow = SUB_SEKTOR_FIRST_ITEM_ROW + (g.range[1] - 1);
+  groups.forEach(function (g, idx) {
+    const r = sektorFirstRow + idx;
 
     function sumFormula(col) {
-      if (startRow === endRow) return '=' + col + startRow;
-      return '=SUM(' + col + startRow + ':' + col + endRow + ')';
+      if (g.startRow === g.endRow) return '=' + col + g.startRow;
+      return '=SUM(' + col + g.startRow + ':' + col + g.endRow + ')';
     }
 
     values.push([
@@ -461,24 +690,36 @@ function buildRekapLiterasiValues(dataGabungName, lastDataRow) {
 
   values.push([
     '', 'Total',
-    '=SUM(C' + SEKTOR_FIRST_ITEM_ROW + ':C' + SEKTOR_LAST_ITEM_ROW + ')',
-    '=SUM(D' + SEKTOR_FIRST_ITEM_ROW + ':D' + SEKTOR_LAST_ITEM_ROW + ')',
-    '=SUM(E' + SEKTOR_FIRST_ITEM_ROW + ':E' + SEKTOR_LAST_ITEM_ROW + ')',
-    '=SUM(F' + SEKTOR_FIRST_ITEM_ROW + ':F' + SEKTOR_LAST_ITEM_ROW + ')',
-    '=IFERROR(D' + SEKTOR_TOTAL_ROW + '/C' + SEKTOR_TOTAL_ROW + ';0)',
-    '=IFERROR(E' + SEKTOR_TOTAL_ROW + '/C' + SEKTOR_TOTAL_ROW + ';0)',
-    '=IFERROR(F' + SEKTOR_TOTAL_ROW + '/C' + SEKTOR_TOTAL_ROW + ';0)'
+    '=SUM(C' + sektorFirstRow + ':C' + sektorLastRow + ')',
+    '=SUM(D' + sektorFirstRow + ':D' + sektorLastRow + ')',
+    '=SUM(E' + sektorFirstRow + ':E' + sektorLastRow + ')',
+    '=SUM(F' + sektorFirstRow + ':F' + sektorLastRow + ')',
+    '=IFERROR(D' + sektorTotalRow + '/C' + sektorTotalRow + ';0)',
+    '=IFERROR(E' + sektorTotalRow + '/C' + sektorTotalRow + ';0)',
+    '=IFERROR(F' + sektorTotalRow + '/C' + sektorTotalRow + ';0)'
   ]);
 
-  return values;
+  return {
+    values: values,
+    layout: {
+      subSektorHeaderRow: SUB_SEKTOR_HEADER_ROW,
+      subSektorFirstRow: SUB_SEKTOR_FIRST_ITEM_ROW,
+      subSektorLastRow: subSektorLastRow,
+      subSektorTotalRow: subSektorTotalRow,
+      sektorHeaderRow: sektorHeaderRow,
+      sektorFirstRow: sektorFirstRow,
+      sektorLastRow: sektorLastRow,
+      sektorTotalRow: sektorTotalRow
+    }
+  };
 }
 
-function rekapLiterasiFormatRequests(sheetId) {
+function rekapLiterasiFormatRequests(sheetId, layout) {
   return [
     // Header tabel Sub Sektor
     {
       repeatCell: {
-        range: { sheetId: sheetId, startRowIndex: SUB_SEKTOR_HEADER_ROW - 1, endRowIndex: SUB_SEKTOR_HEADER_ROW, startColumnIndex: 0, endColumnIndex: 6 },
+        range: { sheetId: sheetId, startRowIndex: layout.subSektorHeaderRow - 1, endRowIndex: layout.subSektorHeaderRow, startColumnIndex: 0, endColumnIndex: 6 },
         cell: { userEnteredFormat: { textFormat: { bold: true }, horizontalAlignment: 'CENTER' } },
         fields: 'userEnteredFormat(textFormat,horizontalAlignment)'
       }
@@ -486,7 +727,7 @@ function rekapLiterasiFormatRequests(sheetId) {
     // Baris Total tabel Sub Sektor
     {
       repeatCell: {
-        range: { sheetId: sheetId, startRowIndex: SUB_SEKTOR_TOTAL_ROW - 1, endRowIndex: SUB_SEKTOR_TOTAL_ROW, startColumnIndex: 0, endColumnIndex: 6 },
+        range: { sheetId: sheetId, startRowIndex: layout.subSektorTotalRow - 1, endRowIndex: layout.subSektorTotalRow, startColumnIndex: 0, endColumnIndex: 6 },
         cell: { userEnteredFormat: { textFormat: { bold: true } } },
         fields: 'userEnteredFormat(textFormat)'
       }
@@ -494,7 +735,7 @@ function rekapLiterasiFormatRequests(sheetId) {
     // Header tabel Sektor
     {
       repeatCell: {
-        range: { sheetId: sheetId, startRowIndex: SEKTOR_HEADER_ROW - 1, endRowIndex: SEKTOR_HEADER_ROW, startColumnIndex: 0, endColumnIndex: 9 },
+        range: { sheetId: sheetId, startRowIndex: layout.sektorHeaderRow - 1, endRowIndex: layout.sektorHeaderRow, startColumnIndex: 0, endColumnIndex: 9 },
         cell: { userEnteredFormat: { textFormat: { bold: true }, horizontalAlignment: 'CENTER' } },
         fields: 'userEnteredFormat(textFormat,horizontalAlignment)'
       }
@@ -502,7 +743,7 @@ function rekapLiterasiFormatRequests(sheetId) {
     // Baris Total tabel Sektor
     {
       repeatCell: {
-        range: { sheetId: sheetId, startRowIndex: SEKTOR_TOTAL_ROW - 1, endRowIndex: SEKTOR_TOTAL_ROW, startColumnIndex: 0, endColumnIndex: 9 },
+        range: { sheetId: sheetId, startRowIndex: layout.sektorTotalRow - 1, endRowIndex: layout.sektorTotalRow, startColumnIndex: 0, endColumnIndex: 9 },
         cell: { userEnteredFormat: { textFormat: { bold: true } } },
         fields: 'userEnteredFormat(textFormat)'
       }
@@ -510,7 +751,7 @@ function rekapLiterasiFormatRequests(sheetId) {
     // Format persen untuk kolom G, H, I di tabel Sektor
     {
       repeatCell: {
-        range: { sheetId: sheetId, startRowIndex: SEKTOR_FIRST_ITEM_ROW - 1, endRowIndex: SEKTOR_TOTAL_ROW, startColumnIndex: 6, endColumnIndex: 9 },
+        range: { sheetId: sheetId, startRowIndex: layout.sektorFirstRow - 1, endRowIndex: layout.sektorTotalRow, startColumnIndex: 6, endColumnIndex: 9 },
         cell: { userEnteredFormat: { numberFormat: { type: 'PERCENT', pattern: '0.00%' } } },
         fields: 'userEnteredFormat.numberFormat'
       }
@@ -540,7 +781,7 @@ document.getElementById('uploadBtn').addEventListener('click', async function ()
       spreadsheetId = createData.spreadsheetId;
       log('Spreadsheet baru dibuat.');
     } else {
-      spreadsheetId = document.getElementById('existingId').value.trim();
+      spreadsheetId = extractSpreadsheetId(document.getElementById('existingId').value);
       if (!spreadsheetId) throw new Error('Isi ID spreadsheet dulu.');
     }
 
@@ -553,10 +794,15 @@ document.getElementById('uploadBtn').addEventListener('click', async function ()
 
     const lastDataRow = DATA_START_ROW + sourceRows.length - 1;
 
+    log('Menyusun daftar Sub Sektor & Sektor dari data...');
+    const taxonomy = buildDynamicTaxonomy(sourceRows, true);
+    log(taxonomy.subSektorList.length + ' Sub Sektor ditemukan, dikelompokkan ke ' + taxonomy.groups.length + ' Sektor.');
+
     log('Menyiapkan tab "Rekap Literasi"...');
     const rekapLiterasiSheetId = await ensureSheet(spreadsheetId, 'Rekap Literasi');
-    await writeValues(spreadsheetId, 'Rekap Literasi', buildRekapLiterasiValues(dataGabungName, lastDataRow));
-    await batchFormat(spreadsheetId, rekapLiterasiFormatRequests(rekapLiterasiSheetId));
+    const rekap = buildRekapLiterasiValues(dataGabungName, lastDataRow, taxonomy);
+    await writeValues(spreadsheetId, 'Rekap Literasi', rekap.values);
+    await batchFormat(spreadsheetId, rekapLiterasiFormatRequests(rekapLiterasiSheetId, rekap.layout));
     log('Tab "Rekap Literasi" selesai.');
 
     log('Semua tab berhasil dibuat.');
